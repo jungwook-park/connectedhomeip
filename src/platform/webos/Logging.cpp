@@ -26,11 +26,20 @@
 #include <lib/support/logging/Constants.h>
 
 #include <cinttypes>
+#include <cstdarg>
 #include <cstdio>
 #include <cstring>
 #include <sys/syscall.h>
 #include <sys/time.h>
 #include <unistd.h>
+
+#include <PmLogLib.h>
+
+// PmLog context under which CHIP logs appear in /var/log/messages. Watch with:
+//   tail -F /var/log/messages | grep -i unifiedmatter
+// Detail (Debug) lines are gated by the context level; enable them with:
+//   PmLogCtl set unifiedmatter debug
+#define CHIP_WEBOS_PMLOG_CONTEXT "unifiedmatter"
 
 namespace chip {
 namespace DeviceLayer {
@@ -53,6 +62,10 @@ namespace Platform {
  */
 void LogV(const char * module, uint8_t category, const char * msg, va_list v)
 {
+    // Format once; the va_list can only be traversed a single time.
+    char formatted[CHIP_CONFIG_LOG_MESSAGE_MAX_SIZE];
+    vsnprintf(formatted, sizeof(formatted), msg, v);
+
     struct timeval tv;
 
     // Should not fail per man page of gettimeofday(), but failed to get time is not a fatal error in log. The bad time value will
@@ -63,13 +76,34 @@ void LogV(const char * module, uint8_t category, const char * msg, va_list v)
     // where multiple threads are using logging subsystem at the same time.
     flockfile(stdout);
 
-    printf("[%" PRIu64 ".%06" PRIu64 "][%lld:%lld] CHIP:%s: ", static_cast<uint64_t>(tv.tv_sec), static_cast<uint64_t>(tv.tv_usec),
-           static_cast<long long>(syscall(SYS_getpid)), static_cast<long long>(syscall(SYS_gettid)), module);
-    vprintf(msg, v);
-    printf("\n");
+    printf("[%" PRIu64 ".%06" PRIu64 "][%lld:%lld] CHIP:%s: %s\n", static_cast<uint64_t>(tv.tv_sec),
+           static_cast<uint64_t>(tv.tv_usec), static_cast<long long>(syscall(SYS_getpid)),
+           static_cast<long long>(syscall(SYS_gettid)), module, formatted);
     fflush(stdout);
 
     funlockfile(stdout);
+
+    // Also route to PmLog so entries land in /var/log/messages. The CHIP log
+    // category maps onto PmLog levels: Error->Error, Progress->Info, everything
+    // else (Detail/Automation)->Debug.
+    static PmLogContext sPmLogContext = nullptr;
+    if (sPmLogContext == nullptr)
+    {
+        PmLogGetContext(CHIP_WEBOS_PMLOG_CONTEXT, &sPmLogContext);
+    }
+
+    switch (category)
+    {
+    case chip::Logging::kLogCategory_Error:
+        PmLogError(sPmLogContext, "CHIPLOG", 0, "%s: %s", module, formatted);
+        break;
+    case chip::Logging::kLogCategory_Progress:
+        PmLogInfo(sPmLogContext, "CHIPLOG", 0, "%s: %s", module, formatted);
+        break;
+    default:
+        PmLogDebug(sPmLogContext, "%s: %s", module, formatted);
+        break;
+    }
 
     // Let the application know that a log message has been emitted.
     DeviceLayer::OnLogOutput();

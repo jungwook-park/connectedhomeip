@@ -92,14 +92,14 @@ CHIP_ERROR WbsConnection::SendIndicationImpl(ConnectionDataBundle * data)
     ret = lsRequester->lsCallSync(API_BLUETOOTH_GATT_WRITECHRACTERISTIC, lunaParam.stringify().c_str(), responsePayload);
     if (ret != true || !responsePayload.hasKey(STR_RETURN_VALUE) || !responsePayload[STR_RETURN_VALUE].asBool())
     {
-        g_free(data);
+        chip::Platform::Delete(data);
         ChipLogError(DeviceLayer, "SendIndicationImpl API_BLUETOOTH_GATT_WRITECHRACTERISTIC Failed");
         return CHIP_ERROR_INTERNAL;
     }
 
     BLEManagerImpl::HandleWriteComplete(data->mConn);
     ChipLogDetail(DeviceLayer, "SendIndicationImpl success");
-    g_free(data);
+    chip::Platform::Delete(data);
     return CHIP_NO_ERROR;
 }
 CHIP_ERROR WbsConnection::SendWriteRequest(chip::System::PacketBufferHandle apBuf)
@@ -133,14 +133,14 @@ CHIP_ERROR WbsConnection::SendWriteRequestImpl(ConnectionDataBundle * data)
     ret = lsRequester->lsCallSync(API_BLUETOOTH_GATT_WRITECHRACTERISTIC, lunaParam.stringify().c_str(), responsePayload);
     if (ret != true || !responsePayload.hasKey(STR_RETURN_VALUE) || !responsePayload[STR_RETURN_VALUE].asBool())
     {
-        g_free(data);
+        chip::Platform::Delete(data);
         ChipLogError(DeviceLayer, "SendWriteRequestImpl API_BLUETOOTH_GATT_WRITECHRACTERISTIC Failed");
         return CHIP_ERROR_INTERNAL;
     }
 
     BLEManagerImpl::HandleWriteComplete(data->mConn);
     // ChipLogDetail(DeviceLayer, "SendWriteRequestImpl success");
-    g_free(data);
+    chip::Platform::Delete(data);
     return CHIP_NO_ERROR;
 }
 
@@ -225,7 +225,10 @@ bool WbsConnection::GattGetServices(std::string address)
 
 ConnectionDataBundle * WbsConnection::MakeConnectionDataBundle(WbsConnection * aConn, chip::System::PacketBufferHandle aBuf)
 {
-    ConnectionDataBundle * bundle = g_new(ConnectionDataBundle, 1);
+    // ConnectionDataBundle holds a PacketBufferHandle (non-trivial C++ type), so it must be
+    // constructed/destroyed with C++ new/delete. g_new/g_free would skip the constructor
+    // (leaving buf uninitialized) and the destructor (leaking the packet buffer reference).
+    ConnectionDataBundle * bundle = chip::Platform::New<ConnectionDataBundle>();
     bundle->mConn                 = aConn;
     bundle->buf                   = std::move(aBuf);
     return bundle;
@@ -332,7 +335,9 @@ bool WbsConnection::gattMonitorCharateristicsCb(LSHandle * sh, LSMessage * messa
         {
             bytesDataJObj[i].asNumber<int32_t>(v);
             if (chip::CanCastTo<uint8_t>(v))
+            {
                 *(buf->Start() + i) = static_cast<uint8_t>(v);
+            }
         }
         buf->SetDataLength(bytesDataJSize);
         // ChipLogDetail(DeviceLayer, "gattMonitorCharateristicsCb success");
@@ -348,9 +353,11 @@ void WbsConnection::WbsOTConnectionDestroy(WbsConnection * aConn)
     if (aConn)
     {
         if (aConn->mPeerAddress)
+        {
             g_free(aConn->mPeerAddress);
+        }
 
-        g_free(aConn);
+        chip::Platform::Delete(aConn);
     }
 }
 
@@ -413,7 +420,9 @@ CHIP_ERROR WbsConnection::ConnectDeviceImpl(ConnectParams * apParams)
         }
 
         if (GattGetServices(wbsAddress) != true)
+        {
             return CHIP_ERROR_INTERNAL;
+        }
     }
 
     UpdateConnectionTable(wbsAddress, wbsClientId, *endpoint);
@@ -445,7 +454,9 @@ CHIP_ERROR WbsConnection::ConnectDevice(std::string address, WbsEndpoint * aEndp
     chip::Platform::Delete(mRemoteAddress);
     chip::Platform::Delete(params);
     if (err != CHIP_NO_ERROR)
+    {
         BLEManagerImpl::HandleConnectFailed(CHIP_ERROR_INTERNAL);
+    }
 
     return err;
 }
@@ -467,7 +478,9 @@ void WbsConnection::CancelConnect()
             ChipLogError(Ble, "%s API_BLUETOOTH_GATT_DISCONNECT Failed", __func__);
         }
         else
+        {
             ChipLogDetail(Ble, "%s : Successed", __func__);
+        }
     }
     else
     {
@@ -497,7 +510,9 @@ void WbsConnection::UpdateConnectionTable(std::string remoteAddr, std::string cl
 
     if (connection == nullptr && bConnected && (!aEndpoint.mIsCentral || GattGetServices(remoteAddr)))
     {
-        connection               = g_new0(WbsConnection, 1);
+        // WbsConnection is a C++ class (holds std::string mClientId), so it must be created with
+        // C++ new/delete. g_new0 would skip the constructor, leaving mClientId in an invalid state.
+        connection               = chip::Platform::New<WbsConnection>();
         connection->mPeerAddress = g_strdup(remoteAddr.c_str()); // mpPeerAddress -> mPeerAddress
         connection->mEndpoint    = &aEndpoint;                   // mpEndpoint -> mEndpoint
         connection->mClientId    = clientId;

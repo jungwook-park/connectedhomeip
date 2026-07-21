@@ -81,6 +81,9 @@ LsRequester::LsRequester()
 {
     GMainContext * pCxt = g_main_context_new();
     m_mainLoop          = g_main_loop_new(pCxt, false);
+    // g_main_loop_new() takes its own reference on the context; drop ours so the
+    // context is not leaked (it stays alive as long as the loop exists).
+    g_main_context_unref(pCxt);
     try
     {
         m_handle = LS::registerService(LS_REQ_SERVICE_NAME);
@@ -103,6 +106,8 @@ void LsRequester::restart()
     stop();
     GMainContext * pCxt = g_main_context_new();
     m_mainLoop          = g_main_loop_new(pCxt, false);
+    // See constructor: release our context reference now that the loop holds one.
+    g_main_context_unref(pCxt);
     try
     {
         m_handle = LS::registerService(LS_REQ_SERVICE_NAME);
@@ -121,7 +126,9 @@ void LsRequester::stop()
     try
     {
         if (g_main_loop_is_running(m_mainLoop))
+        {
             g_main_loop_quit(m_mainLoop);
+        }
         m_handle.detach();
         g_thread_unref(m_thread);
 
@@ -195,7 +202,9 @@ bool LsRequester::lsCallSync(const char * pAPI, const char * pParams, pbnjson::J
     response = pbnjson::JDomParser::fromString(cc->result);
     // ChipLogDetail(DeviceLayer, "lsCallSync completed for API: %s, response: %s", pAPI, response.stringify().c_str());
     if (cc)
+    {
         delete cc;
+    }
     return retVal;
 }
 

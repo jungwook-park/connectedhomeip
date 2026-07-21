@@ -94,12 +94,12 @@ private:
     static void WbsOTConnectionDestroy(WbsConnection * aConn);
     static void UpdateConnectionTable(std::string remoteAddr, std::string clientId, WbsEndpoint & aEndpoint);
 
-    char * mPeerAddress;
-    bool mNotifyAcquired = false;
-    uint16_t mMtu        = 0;
+    char * mPeerAddress    = nullptr;
+    bool mNotifyAcquired   = false;
+    uint16_t mMtu          = 0;
     std::string mClientId;
-    uint32_t mMonitorToken;
-    WbsEndpoint * mEndpoint;
+    uint32_t mMonitorToken  = 0;
+    WbsEndpoint * mEndpoint = nullptr;
 };
 
 } // namespace Internal

@@ -108,6 +108,8 @@ bool WbsGetChipDeviceInfo(const pbnjson::JValue & aDevice, chip::Ble::ChipBLEDev
     return true;
 }
 
+} // namespace
+
 CHIP_ERROR WbsDeviceScanner::Init(WbsDeviceScannerDelegate * delegate)
 {
     // Make this function idempotent by shutting down previously initialized state if any.
@@ -291,7 +293,9 @@ void WbsDeviceScanner::ReportDevice(const pbnjson::JValue & device)
     {
         int32_t v = scanRecordDataJObj[j].asNumber<int32_t>();
         if (chip::CanCastTo<uint8_t>(v))
+        {
             aScanRecord[j] = static_cast<uint8_t>(v);
+        }
     }
     const uint8_t * const end = aScanRecord + total_len;
     uint8_t adv_length        = 0;
@@ -302,7 +306,9 @@ void WbsDeviceScanner::ReportDevice(const pbnjson::JValue & device)
     while (!finished)
     {
         if (payload >= end)
+        {
             break;
+        }
 
         adv_length = *payload;
         payload++;
@@ -312,7 +318,9 @@ void WbsDeviceScanner::ReportDevice(const pbnjson::JValue & device)
         {
             // The AD structure spans adv_length bytes from adv_type; don't read past the record.
             if (payload + adv_length > end)
+            {
                 break;
+            }
 
             adv_type = *payload;
             payload++;
@@ -392,9 +400,10 @@ void WbsDeviceScanner::ReportDevice(const pbnjson::JValue & device)
         return;
     }
 
-    mBleChipDevice = chip::Platform::New<BLEChipDevice>(bleDevice, deviceInfo);
-    mDelegate->OnDeviceScanned(mBleChipDevice->mBleDevice, mBleChipDevice->mDeviceInfo);
-    chip::Platform::Delete(mBleChipDevice);
+    // The device descriptor only needs to live for the duration of this callback, so keep it on
+    // the stack rather than heap-allocating (avoids a leak if OnDeviceScanned throws).
+    BLEChipDevice bleChipDevice(bleDevice, deviceInfo);
+    mDelegate->OnDeviceScanned(bleChipDevice.mBleDevice, bleChipDevice.mDeviceInfo);
 }
 
 void WbsDeviceScanner::RemoveDevice(const pbnjson::JValue & device)
