@@ -26,20 +26,15 @@
 #include <lib/support/logging/Constants.h>
 
 #include <cinttypes>
-#include <cstdarg>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <sys/syscall.h>
 #include <sys/time.h>
 #include <unistd.h>
 
 #include <PmLogLib.h>
-
-// PmLog context under which CHIP logs appear in /var/log/messages. Watch with:
-//   tail -F /var/log/messages | grep -i unifiedmatter
-// Detail (Debug) lines are gated by the context level; enable them with:
-//   PmLogCtl set unifiedmatter debug
-#define CHIP_WEBOS_PMLOG_CONTEXT "unifiedmatter"
 
 namespace chip {
 namespace DeviceLayer {
@@ -57,52 +52,110 @@ void __attribute__((weak)) OnLogOutput() {}
 namespace Logging {
 namespace Platform {
 
+namespace {
+
+// PmLog context for CHIP/Matter stack logs (viewable via `pmlog`/journald under this context name). Fetched lazily on first use.
+PmLogContext GetChipPmLogContext()
+{
+    static PmLogContext sContext = nullptr;
+    if (sContext == nullptr)
+    {
+        PmLogGetContext("thinqlocal", &sContext);
+    }
+    return sContext;
+}
+
+// File sink for CHIP/Matter stack logs, so they can be inspected with plain
+// tail/cat/grep without depending on the PmLog/journald configuration of the
+// target. The path is overridable via the MATTER_LOG_FILE environment variable
+// (default: /tmp/unifiedmatter.log). Set MATTER_LOG_FILE="" to disable the file.
+FILE * GetChipLogFile()
+{
+    static bool sInitialized = false;
+    static FILE * sFile      = nullptr;
+    if (!sInitialized)
+    {
+        sInitialized      = true;
+        const char * path = getenv("MATTER_LOG_FILE");
+        if (path == nullptr)
+        {
+            path = "/tmp/thinqlocal.log";
+        }
+        if (path[0] != '\0')
+        {
+            sFile = fopen(path, "a");
+        }
+    }
+    return sFile;
+}
+
+const char * CategoryLabel(uint8_t category)
+{
+    switch (category)
+    {
+    case kLogCategory_Error:
+        return "ERROR";
+    case kLogCategory_Progress:
+        return "INFO";
+    case kLogCategory_Detail:
+    default:
+        return "DEBUG";
+    }
+}
+
+} // namespace
+
 /**
  * CHIP log output functions.
+ *
+ * Routed to PmLog so the Matter stack logs land in the webOS logging system
+ * instead of stdout. The message is pre-formatted with vsnprintf so that any
+ * '%' in the payload is not re-interpreted by PmLog's own formatter.
  */
 void LogV(const char * module, uint8_t category, const char * msg, va_list v)
 {
-    // Format once; the va_list can only be traversed a single time.
-    char formatted[CHIP_CONFIG_LOG_MESSAGE_MAX_SIZE];
-    vsnprintf(formatted, sizeof(formatted), msg, v);
+    char buffer[CHIP_CONFIG_LOG_MESSAGE_MAX_SIZE];
+    vsnprintf(buffer, sizeof(buffer), msg, v);
 
-    struct timeval tv;
-
-    // Should not fail per man page of gettimeofday(), but failed to get time is not a fatal error in log. The bad time value will
-    // indicate the error occurred during getting time.
-    gettimeofday(&tv, nullptr);
-
-    // Lock standard output, so a single log line will not be corrupted in case
-    // where multiple threads are using logging subsystem at the same time.
-    flockfile(stdout);
-
-    printf("[%" PRIu64 ".%06" PRIu64 "][%lld:%lld] CHIP:%s: %s\n", static_cast<uint64_t>(tv.tv_sec),
-           static_cast<uint64_t>(tv.tv_usec), static_cast<long long>(syscall(SYS_getpid)),
-           static_cast<long long>(syscall(SYS_gettid)), module, formatted);
-    fflush(stdout);
-
-    funlockfile(stdout);
-
-    // Also route to PmLog so entries land in /var/log/messages. The CHIP log
-    // category maps onto PmLog levels: Error->Error, Progress->Info, everything
-    // else (Detail/Automation)->Debug.
-    static PmLogContext sPmLogContext = nullptr;
-    if (sPmLogContext == nullptr)
-    {
-        PmLogGetContext(CHIP_WEBOS_PMLOG_CONTEXT, &sPmLogContext);
-    }
-
+    PmLogContext ctx = GetChipPmLogContext();
     switch (category)
     {
-    case chip::Logging::kLogCategory_Error:
-        PmLogError(sPmLogContext, "CHIPLOG", 0, "%s: %s", module, formatted);
+    case kLogCategory_Error:
+        PmLogError(ctx, "CHIP", 0, "[%s] %s", module, buffer);
         break;
-    case chip::Logging::kLogCategory_Progress:
-        PmLogInfo(sPmLogContext, "CHIPLOG", 0, "%s: %s", module, formatted);
+    case kLogCategory_Progress:
+        PmLogInfo(ctx, "CHIP", 0, "[%s] %s", module, buffer);
         break;
+    case kLogCategory_Detail:
     default:
-        PmLogDebug(sPmLogContext, "%s: %s", module, formatted);
+        PmLogDebug(ctx, "[%s] %s", module, buffer);
         break;
+    }
+
+    // Also emit to a log file and to stdout. CHIP logging can be invoked from
+    // multiple threads, so serialize the formatting/writes with a mutex.
+    {
+        static std::mutex sMutex;
+        std::lock_guard<std::mutex> lock(sMutex);
+
+        struct timeval tv;
+        gettimeofday(&tv, nullptr);
+        long long sec = static_cast<long long>(tv.tv_sec);
+        long ms       = static_cast<long>(tv.tv_usec / 1000);
+        long pid      = static_cast<long>(syscall(SYS_getpid));
+        long tid      = static_cast<long>(syscall(SYS_gettid));
+
+        FILE * logFile = GetChipLogFile();
+        if (logFile != nullptr)
+        {
+            fprintf(logFile, "[%lld.%03ld] [%ld:%ld] [%s] [%s] %s\n", sec, ms, pid, tid, CategoryLabel(category), module,
+                    buffer);
+            fflush(logFile);
+        }
+
+        // Keep console output for interactive test runs.
+        fprintf(stdout, "[%lld.%03ld] [%ld:%ld] [%s] %s\n", sec, ms, pid, tid, module, buffer);
+        fflush(stdout);
     }
 
     // Let the application know that a log message has been emitted.
